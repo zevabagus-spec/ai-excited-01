@@ -4,7 +4,7 @@
 [![rank](https://make.fun/badge/ai-excited-01/zevabagus-spec/ai-excited-01/rank.svg)](https://make.fun/bounty/ai-excited-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=ai-excited-01)
 [![reward](https://make.fun/badge/ai-excited-01/zevabagus-spec/ai-excited-01/reward.svg)](https://make.fun/bounty/ai-excited-01?utm_source=github&utm_medium=readme&utm_campaign=ai-excited-01)
 
-One image that gets an AI judge excited: your program writes it, the judge compares the images two at a time and picks the one that excites it more, the 20 best win rates share $250, and the 1st-place image is shown on make.fun's site and in its posts.
+Teacup Tsunami: a porcelain teacup, tea spilling in a golden arc, rides a giant curling wave at sunset — rendered fully procedurally by a self-contained Node program (no image assets, no network). A 1024×1024 deterministic PNG, drawn pixel by pixel from a seeded generator: violet-to-orange sky, glowing sun, curling crest with foam and spray, and steam off the hot tea. Every pixel is computed from a fixed seed, so two runs write byte-identical PNGs.
 
 ## Run it
 

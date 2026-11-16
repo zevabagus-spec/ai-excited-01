@@ -1,594 +1,463 @@
-// Giant Koi, Tiny Teacup — make.fun ai-excited-01 entry.
+// Teacup Tsunami — make.fun ai-excited-01 entry (Node 22, standard library only).
 //
-// One image, drawn entirely by this program at runtime. A colossal orange
-// koi bursts out of an ordinary little teacup, water exploding around it,
-// and shouts at the judge. The surprise is pure scale: a fish that should
-// fit in the cup is bigger than the table. The momentum is the diagonal
-// leap from the cup at bottom-left to the shouting head at top-right, with
-// speed lines, a splash crown and flying droplets all driving toward that
-// one moment. One big orange shape on deep indigo, so it still hits at
-// 300 px. No image is read, downloaded or copied: every pixel is computed.
+// A porcelain teacup rides a giant curling wave at sunset, rendered fully
+// procedurally: no image assets, no network, one deterministic program that
+// writes /output/entry.png (1024x1024 PNG, well under 1 MiB).
 //
-// Node 22, standard library only. Run it with:
+// Run outside the grader's container:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
-// It writes exactly one file, entry.png (1024x1024 PNG), deterministically.
 
+import { deflateSync } from 'node:zlib';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { deflateSync } from 'node:zlib';
 
-// ------------------------------------------------------------ the canvas
+const W = 1024;
+const H = 1024;
 
-const W = 256; // logical grid, upscaled 4x to 1024
-const H = 256;
-const SCALE = 4;
-const pixels = new Uint8Array(W * H * 3);
-
-type RGB = [number, number, number];
-type Pt = [number, number];
-
-function hex(code: string): RGB {
-  return [
-    parseInt(code.slice(1, 3), 16),
-    parseInt(code.slice(3, 5), 16),
-    parseInt(code.slice(5, 7), 16),
-  ];
-}
-
-function blend(a: RGB, b: RGB, t: number): RGB {
-  return [
-    Math.round(a[0] + (b[0] - a[0]) * t),
-    Math.round(a[1] + (b[1] - a[1]) * t),
-    Math.round(a[2] + (b[2] - a[2]) * t),
-  ];
-}
-
-// One fixed seed: both grading runs write identical bytes.
+// ---------- deterministic PRNG (fixed seed: no Date, no Math.random) ----------
 function mulberry32(seed: number): () => number {
-  let state = seed >>> 0;
+  let a = seed >>> 0;
   return () => {
-    state |= 0;
-    state = (state + 0x6d2b79f5) | 0;
-    let x = Math.imul(state ^ (state >>> 15), 1 | state);
-    x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x;
-    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-const rand = mulberry32(20261117);
+const rand = mulberry32(20261116);
 
-// ------------------------------------------------------------- the palette
-
-const INK = hex('#160f2e'); // near-black indigo, outlines
-const SKY_TOP = hex('#140e36');
-const SKY_BOT = hex('#2b1a5e');
-const GOLD = hex('#ffd23f');
-const SUN = hex('#ffb020');
-const KOI_DEEP = hex('#d94f00');
-const KOI = hex('#ff6b1a');
-const KOI_PALE = hex('#ffa62b');
-const CREAM = hex('#fff3d6');
-const FIN_PALE = hex('#ffe9b0');
-const AQUA = hex('#7fe3ff');
-const AQUA_PALE = hex('#b8f1ff');
-const PAPER: RGB = [255, 255, 255];
-const TEA = hex('#d98a2b');
-const CUP_WHITE = hex('#f8f8ff');
-const STAR = hex('#ffe9a8');
-
-// ------------------------------------------------------- drawing primitives
-
-function setPixel(x: number, y: number, c: RGB): void {
-  const ix = Math.round(x);
-  const iy = Math.round(y);
-  if (ix < 0 || iy < 0 || ix >= W || iy >= H) return;
-  const off = (iy * W + ix) * 3;
-  pixels[off] = c[0];
-  pixels[off + 1] = c[1];
-  pixels[off + 2] = c[2];
-}
-
-function fillRect(x: number, y: number, w: number, h: number, c: RGB): void {
-  const x0 = Math.max(0, Math.floor(x));
-  const x1 = Math.min(W - 1, Math.ceil(x + w) - 1);
-  const y0 = Math.max(0, Math.floor(y));
-  const y1 = Math.min(H - 1, Math.ceil(y + h) - 1);
-  for (let j = y0; j <= y1; j++) {
-    for (let i = x0; i <= x1; i++) setPixel(i, j, c);
-  }
-}
-
-function fillDisc(cx: number, cy: number, r: number, c: RGB): void {
-  const rad = Math.max(0, r);
-  const x0 = Math.floor(cx - rad);
-  const x1 = Math.ceil(cx + rad);
-  const y0 = Math.floor(cy - rad);
-  const y1 = Math.ceil(cy + rad);
-  for (let j = y0; j <= y1; j++) {
-    for (let i = x0; i <= x1; i++) {
-      const dx = i - cx;
-      const dy = j - cy;
-      if (dx * dx + dy * dy <= rad * rad) setPixel(i, j, c);
-    }
-  }
-}
-
-function fillEllipse(cx: number, cy: number, rx: number, ry: number, angle: number, c: RGB): void {
-  const cos = Math.cos(angle);
-  const sin = Math.sin(angle);
-  const bound = Math.ceil(Math.max(rx, ry)) + 1;
-  for (let j = Math.floor(cy - bound); j <= Math.ceil(cy + bound); j++) {
-    for (let i = Math.floor(cx - bound); i <= Math.ceil(cx + bound); i++) {
-      const dx = i - cx;
-      const dy = j - cy;
-      const u = (dx * cos + dy * sin) / rx;
-      const v = (-dx * sin + dy * cos) / ry;
-      if (u * u + v * v <= 1) setPixel(i, j, c);
-    }
-  }
-}
-
-// A thick straight stroke, drawn as a chain of discs.
-function stroke(x0: number, y0: number, x1: number, y1: number, width: number, c: RGB): void {
-  const steps = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0) * 2));
-  for (let s = 0; s <= steps; s++) {
-    const t = s / steps;
-    fillDisc(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, width / 2, c);
-  }
-}
-
-// Scanline-filled polygon.
-function fillPoly(points: Pt[], c: RGB): void {
-  let lo = Infinity;
-  let hi = -Infinity;
-  for (const [, y] of points) {
-    lo = Math.min(lo, y);
-    hi = Math.max(hi, y);
-  }
-  for (let y = Math.max(0, Math.floor(lo)); y <= Math.min(H - 1, Math.ceil(hi)); y++) {
-    const crossings: number[] = [];
-    for (let i = 0; i < points.length; i++) {
-      const [ax, ay] = points[i];
-      const [bx, by] = points[(i + 1) % points.length];
-      if ((ay <= y && by > y) || (by <= y && ay > y)) {
-        crossings.push(ax + ((y - ay) * (bx - ax)) / (by - ay));
-      }
-    }
-    crossings.sort((a, b) => a - b);
-    for (let k = 0; k + 1 < crossings.length; k += 2) {
-      const x0 = Math.max(0, Math.ceil(crossings[k]));
-      const x1 = Math.min(W - 1, Math.floor(crossings[k + 1]));
-      for (let x = x0; x <= x1; x++) setPixel(x, y, c);
-    }
-  }
-}
-
-function fillRoundRect(x: number, y: number, w: number, h: number, r: number, c: RGB): void {
-  fillRect(x + r, y, w - 2 * r, h, c);
-  fillRect(x, y + r, w, h - 2 * r, c);
-  fillDisc(x + r, y + r, r, c);
-  fillDisc(x + w - r, y + r, r, c);
-  fillDisc(x + r, y + h - r, r, c);
-  fillDisc(x + w - r, y + h - r, r, c);
-}
-
-// ------------------------------------------------------------- bezier spine
-
-function bezPoint(p0: Pt, p1: Pt, p2: Pt, t: number): Pt {
-  const u = 1 - t;
-  return [
-    u * u * p0[0] + 2 * u * t * p1[0] + t * t * p2[0],
-    u * u * p0[1] + 2 * u * t * p1[1] + t * t * p2[1],
-  ];
-}
-
-function bezTangent(p0: Pt, p1: Pt, p2: Pt, t: number): Pt {
-  const u = 1 - t;
-  const dx = 2 * u * (p1[0] - p0[0]) + 2 * t * (p2[0] - p1[0]);
-  const dy = 2 * u * (p1[1] - p0[1]) + 2 * t * (p2[1] - p1[1]);
-  const len = Math.hypot(dx, dy) || 1;
-  return [dx / len, dy / len];
-}
-
-// Unit normal pointing downward (the belly side of the arc).
-function bezDown(p0: Pt, p1: Pt, p2: Pt, t: number): Pt {
-  const [tx, ty] = bezTangent(p0, p1, p2, t);
-  let nx = -ty;
-  let ny = tx;
-  if (ny < 0) {
-    nx = -nx;
-    ny = -ny;
-  }
-  return [nx, ny];
-}
-
-// A tube of discs along a quadratic Bezier, radius from a function of t.
-function bezTube(p0: Pt, p1: Pt, p2: Pt, radius: (t: number) => number, c: RGB): void {
-  const steps = 220;
-  for (let s = 0; s <= steps; s++) {
-    const t = s / steps;
-    const [x, y] = bezPoint(p0, p1, p2, t);
-    fillDisc(x, y, radius(t), c);
-  }
-}
-
-// ------------------------------------------------------------------- the font
-// Chunky 5x7 pixel capitals, only the glyphs the bubble needs.
-
-const GLYPHS: Record<string, string[]> = {
-  W: ['#...#', '#...#', '#...#', '#.#.#', '#.#.#', '##.##', '#...#'],
-  O: ['.###.', '#...#', '#...#', '#...#', '#...#', '#...#', '.###.'],
-  ',': ['.....', '.....', '.....', '.....', '.....', '.##..', '.#...'],
-  J: ['..###', '...#.', '...#.', '...#.', '...#.', '#..#.', '.##..'],
-  U: ['#...#', '#...#', '#...#', '#...#', '#...#', '#...#', '.###.'],
-  D: ['###..', '#..#.', '#...#', '#...#', '#...#', '#..#.', '###..'],
-  G: ['.###.', '#...#', '#....', '#.###', '#...#', '#...#', '.###.'],
-  E: ['#####', '#....', '#....', '####.', '#....', '#....', '#####'],
-  '!': ['..#..', '..#..', '..#..', '..#..', '..#..', '.....', '..#..'],
+// ---------- small math helpers ----------
+const clamp = (x: number, a: number, b: number): number => (x < a ? a : x > b ? b : x);
+const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
+const sstep = (a: number, b: number, x: number): number => {
+  const t = clamp((x - a) / (b - a), 0, 1);
+  return t * t * (3 - 2 * t);
 };
-
-function drawText(cx: number, y: number, text: string, scale: number, c: RGB): void {
-  const step = 6 * scale;
-  const total = text.length * step - scale;
-  let x = cx - total / 2;
-  for (const ch of text) {
-    const glyph = GLYPHS[ch];
-    if (glyph) {
-      for (let row = 0; row < 7; row++) {
-        for (let col = 0; col < 5; col++) {
-          if (glyph[row][col] === '#') {
-            fillRect(x + col * scale, y + row * scale, scale, scale, c);
-          }
-        }
-      }
-    }
-    x += step;
-  }
-}
-
-// -------------------------------------------------------------------- the scene
-
-// The fish spine: tail in the cup, head up at top-right.
-const SPINE0: Pt = [76, 228];
-const SPINE1: Pt = [62, 108];
-const SPINE2: Pt = [200, 78];
-
-function bodyRadius(t: number): number {
-  const swell = 6.5 + 11.5 * Math.pow(Math.sin(Math.PI * Math.min(t * 1.05, 1)), 0.9);
-  const headBoost = 6 * Math.max(0, Math.min(1, (t - 0.85) / 0.15));
-  return swell + headBoost * headBoost * (3 - 2 * headBoost);
-}
-
-// Body colour: deep orange at the tail, bright orange mid-body, pale gold
-// toward the head, back to orange at the snout.
-const BODY_STOPS: Array<[number, RGB]> = [
-  [0, KOI_DEEP],
-  [0.45, KOI],
-  [0.8, KOI_PALE],
-  [1, KOI],
+type RGB = [number, number, number];
+const mix3 = (a: RGB, b: RGB, t: number): RGB => [
+  lerp(a[0], b[0], t),
+  lerp(a[1], b[1], t),
+  lerp(a[2], b[2], t),
 ];
-function bodyColour(t: number): RGB {
-  for (let i = 1; i < BODY_STOPS.length; i++) {
-    if (t <= BODY_STOPS[i][0]) {
-      const [t0, c0] = BODY_STOPS[i - 1];
-      const [t1, c1] = BODY_STOPS[i];
-      return blend(c0, c1, (t - t0) / (t1 - t0));
-    }
-  }
-  return KOI;
+// Blend foreground colour fg (alpha a) over background bg.
+const over = (bg: RGB, fg: RGB, a: number): RGB => [
+  lerp(bg[0], fg[0], a),
+  lerp(bg[1], fg[1], a),
+  lerp(bg[2], fg[2], a),
+];
+
+// ---------- value noise (deterministic, integer-hash based) ----------
+function hash2(ix: number, iy: number): number {
+  let h = (ix * 374761393 + iy * 668265263) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return (((h ^ (h >>> 16)) >>> 0) % 10000) / 10000;
 }
-
-// 1. Background: deep indigo, darker at the top.
-for (let y = 0; y < H; y++) {
-  fillRect(0, y, W, 1, blend(SKY_TOP, SKY_BOT, y / (H - 1)));
+function vnoise(x: number, y: number): number {
+  const ix = Math.floor(x);
+  const iy = Math.floor(y);
+  const fx = x - ix;
+  const fy = y - iy;
+  const sx = fx * fx * (3 - 2 * fx);
+  const sy = fy * fy * (3 - 2 * fy);
+  const a = hash2(ix, iy);
+  const b = hash2(ix + 1, iy);
+  const c = hash2(ix, iy + 1);
+  const d = hash2(ix + 1, iy + 1);
+  return lerp(lerp(a, b, sx), lerp(c, d, sx), sy);
 }
-
-// 2. Warm glow behind the head, the thrilling moment: a smooth radial
-// falloff in many small steps, so it reads as light with no rings and no
-// flat brown disc.
-const glowAt: Pt = [200, 80];
-for (let r = 78; r >= 8; r -= 4) {
-  fillDisc(glowAt[0], glowAt[1], r, blend(SKY_BOT, SUN, 0.42 * (1 - r / 82)));
-}
-
-// 3. A few faint stars, kept out of the bubble's corner.
-for (let i = 0; i < 22; i++) {
-  const x = 6 + rand() * (W - 12);
-  const y = 6 + rand() * 108;
-  if (x < 158 && y < 82) continue;
-  setPixel(x, y, rand() < 0.5 ? STAR : PAPER);
-  if (rand() < 0.25) setPixel(x + 1, y, STAR);
-}
-
-// 4. Speed lines, parallel to the leap, behind everything else.
-const leap: Pt = [0.88, -0.47];
-for (let i = 0; i < 14; i++) {
-  const x = 12 + rand() * (W - 24);
-  const y = 14 + rand() * (H - 60);
-  if (x < 158 && y < 86) continue; // bubble stays clean
-  if (x > 40 && x < 122 && y > 204) continue; // cup stays clean
-  const len = 18 + rand() * 30;
-  const col = i % 3 === 0 ? GOLD : i % 3 === 1 ? PAPER : AQUA;
-  stroke(x, y, x + leap[0] * len, y + leap[1] * len, 2, col);
-}
-
-// 5. A sheet of water thrown sideways out of the cup, behind the fish.
-const ARC0: Pt = [58, 240];
-const ARC1: Pt = [18, 158];
-const ARC2: Pt = [92, 104];
-bezTube(ARC0, ARC1, ARC2, () => 4.5, AQUA);
-bezTube(ARC0, ARC1, ARC2, () => 1.8, AQUA_PALE);
-
-// 6. Splash crown bursting from the rim (the cup is drawn over its bases).
-for (const [base, tipX, tipY] of [
-  [60, 50, 194],
-  [70, 64, 184],
-  [79, 80, 180],
-  [88, 94, 188],
-  [97, 105, 198],
-] as Array<[number, number, number]>) {
-  fillPoly(
-    [
-      [base - 4, 222],
-      [base + 4, 222],
-      [tipX, tipY],
-    ],
-    PAPER,
+function fbm(x: number, y: number): number {
+  return (
+    vnoise(x, y) * 0.55 +
+    vnoise(x * 2.13 + 7.7, y * 2.13 + 3.1) * 0.3 +
+    vnoise(x * 4.31 + 13.7, y * 4.31 + 9.4) * 0.15
   );
 }
 
-// 7. Tail fin: two fat lobes sweeping back out of the cup.
-fillPoly(
-  [
-    [78, 218],
-    [42, 244],
-    [64, 212],
-  ],
-  INK,
-);
-fillPoly(
-  [
-    [78, 218],
-    [46, 240],
-    [66, 211],
-  ],
-  FIN_PALE,
-);
-fillPoly(
-  [
-    [78, 214],
-    [52, 196],
-    [68, 204],
-  ],
-  INK,
-);
-fillPoly(
-  [
-    [78, 214],
-    [56, 198],
-    [70, 203],
-  ],
-  FIN_PALE,
-);
-fillPoly(
-  [
-    [78, 216],
-    [56, 236],
-    [70, 210],
-  ],
-  KOI_PALE,
-);
+// ---------- 2D signed-distance helpers ----------
+// Distance to a circle outline (negative inside).
+const sdCirc = (px: number, py: number, cx: number, cy: number, r: number): number =>
+  Math.hypot(px - cx, py - cy) - r;
+// Approximate distance to an axis-aligned ellipse (good enough for soft shapes).
+function sdEllipse(px: number, py: number, cx: number, cy: number, rx: number, ry: number): number {
+  const qx = (px - cx) / rx;
+  const qy = (py - cy) / ry;
+  const k = Math.hypot(qx, qy);
+  return (k - 1) * Math.min(rx, ry);
+}
+// Distance to a rounded box centred at (cx, cy) with half-sizes (hx, hy).
+function sdRoundBox(px: number, py: number, cx: number, cy: number, hx: number, hy: number, r: number): number {
+  const qx = Math.abs(px - cx) - (hx - r);
+  const qy = Math.abs(py - cy) - (hy - r);
+  const ax = Math.max(qx, 0);
+  const ay = Math.max(qy, 0);
+  return Math.hypot(ax, ay) + Math.min(Math.max(qx, qy), 0) - r;
+}
+// Distance to a line segment.
+function sdSeg(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 === 0 ? 0 : ((px - ax) * dx + (py - ay) * dy) / len2;
+  t = clamp(t, 0, 1);
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+// Anti-aliased coverage of an SDF: 1 deep inside, 0 outside, smooth edge.
+const aa = (d: number, w = 1.4): number => sstep(w, -w, d);
 
-// 8. The teacup — small, white, ordinary. The joke is the scale.
-fillEllipse(76, 248, 38, 7, 0, INK); // saucer outline
-fillEllipse(76, 247, 35, 6, 0, CUP_WHITE); // saucer
-fillPoly(
-  [
-    [50, 220],
-    [102, 220],
-    [96, 244],
-    [56, 244],
-  ],
-  INK,
-); // cup outline
-fillPoly(
-  [
-    [53, 221],
-    [99, 221],
-    [94, 241],
-    [58, 241],
-  ],
-  CUP_WHITE,
-); // cup body
-fillEllipse(76, 221, 23, 5, 0, INK); // rim outline
-fillEllipse(76, 221, 20, 4, 0, TEA); // tea
-stroke(100, 226, 110, 228, 3, INK); // handle outline
-stroke(100, 226, 110, 228, 2, CUP_WHITE);
-stroke(100, 236, 110, 234, 3, INK);
-stroke(100, 236, 110, 234, 2, CUP_WHITE);
-stroke(109, 227, 109, 235, 3, INK);
-stroke(109, 227, 109, 235, 2, CUP_WHITE);
+// ---------- palette ----------
+const SKY_TOP: RGB = [34, 22, 80];
+const SKY_MID: RGB = [124, 45, 110];
+const SKY_LOW: RGB = [214, 84, 106];
+const SKY_HOR: RGB = [255, 158, 87];
+const SUN_CORE: RGB = [255, 243, 196];
+const SUN_HALO: RGB = [255, 178, 110];
+const CLOUD: RGB = [247, 184, 196];
+const WATER_SHALLOW: RGB = [55, 184, 168];
+const WATER_MID: RGB = [14, 107, 138];
+const WATER_DEEP: RGB = [6, 44, 76];
+const FOAM: RGB = [234, 252, 255];
+const PORCELAIN: RGB = [251, 247, 238];
+const PORCELAIN_SHADE: RGB = [214, 205, 190];
+const TEA: RGB = [217, 138, 43];
+const TEA_DARK: RGB = [164, 92, 22];
+const PETAL: RGB = [229, 107, 154];
+const GOLD: RGB = [242, 193, 78];
+const BIRD: RGB = [42, 26, 74];
 
-// 9. The koi body, drawn in passes so it reads as one smooth fish.
-// Outline first, then the gradient body, then light, belly and spots.
-// The outline tapers away at the head end, so the body flows into the
-// head with no dark ring between them.
-bezTube(SPINE0, SPINE1, SPINE2, (t) => bodyRadius(t) + 3 * (1 - Math.max(0, (t - 0.86) / 0.14)), INK);
-{
-  const steps = 220;
-  for (let s = 0; s <= steps; s++) {
-    const t = s / steps;
-    const [x, y] = bezPoint(SPINE0, SPINE1, SPINE2, t);
-    fillDisc(x, y, bodyRadius(t), bodyColour(t));
+// ---------- sky ----------
+const SUN_X = 420;
+const SUN_Y = 390;
+const SUN_R = 80;
+
+function skyColor(x: number, y: number): RGB {
+  const t = clamp(y / 620, 0, 1);
+  let c: RGB;
+  if (t < 0.45) c = mix3(SKY_TOP, SKY_MID, t / 0.45);
+  else if (t < 0.75) c = mix3(SKY_MID, SKY_LOW, (t - 0.45) / 0.3);
+  else c = mix3(SKY_LOW, SKY_HOR, (t - 0.75) / 0.25);
+  // Sun: glowing disc with a soft halo.
+  const dSun = Math.hypot(x - SUN_X, y - SUN_Y);
+  const glow = Math.exp(-dSun / 170);
+  c = over(c, SUN_HALO, glow * 0.55);
+  c = over(c, SUN_CORE, sstep(SUN_R + 2, SUN_R - 4, dSun));
+  // A thin bright ring right at the disc edge.
+  c = over(c, [255, 255, 240], sstep(6, 0, Math.abs(dSun - SUN_R)) * 0.35);
+  // Clouds: three soft horizontal bands with fbm-eroded edges.
+  const clouds: Array<[number, number, number, number, number]> = [
+    [300, 150, 260, 34, 0.5],
+    [760, 235, 300, 40, 0.45],
+    [180, 330, 210, 30, 0.4],
+  ];
+  for (const [cx, cy, rx, ry, strength] of clouds) {
+    if (Math.abs(x - cx) > rx + 40 || Math.abs(y - cy) > ry + 40) continue;
+    const d = sdEllipse(x, y, cx, cy, rx, ry);
+    const n = fbm(x * 0.02 + 3.1, y * 0.03 + 8.4);
+    const a = sstep(14, -14, d + (n - 0.5) * 46) * strength;
+    if (a > 0) c = over(c, CLOUD, a);
   }
-}
-// Warm highlight along the top edge.
-for (let s = 0; s <= 120; s++) {
-  const t = 0.08 + (0.84 * s) / 120;
-  const [x, y] = bezPoint(SPINE0, SPINE1, SPINE2, t);
-  const [nx, ny] = bezDown(SPINE0, SPINE1, SPINE2, t);
-  fillDisc(x - nx * bodyRadius(t) * 0.55, y - ny * bodyRadius(t) * 0.55, bodyRadius(t) * 0.22, KOI_PALE);
-}
-// Cream belly along the lower side.
-for (let s = 0; s <= 120; s++) {
-  const t = 0.22 + (0.62 * s) / 120;
-  const [x, y] = bezPoint(SPINE0, SPINE1, SPINE2, t);
-  const [nx, ny] = bezDown(SPINE0, SPINE1, SPINE2, t);
-  fillDisc(x + nx * bodyRadius(t) * 0.42, y + ny * bodyRadius(t) * 0.42, bodyRadius(t) * 0.3, CREAM);
-}
-// Dark spots on the upper side.
-for (const [t, r] of [
-  [0.32, 4],
-  [0.48, 5],
-  [0.62, 4],
-  [0.78, 4.5],
-] as Array<[number, number]>) {
-  const [x, y] = bezPoint(SPINE0, SPINE1, SPINE2, t);
-  const [nx, ny] = bezDown(SPINE0, SPINE1, SPINE2, t);
-  fillDisc(x - nx * bodyRadius(t) * 0.35, y - ny * bodyRadius(t) * 0.35, r, INK);
-}
-// Dorsal fin: one low smooth ridge along the top edge.
-function dorsal(extra: number, c: RGB): void {
-  const upper: Pt[] = [];
-  const lower: Pt[] = [];
-  const N = 24;
-  for (let s = 0; s <= N; s++) {
-    const t = 0.3 + (0.45 * s) / N;
-    const [x, y] = bezPoint(SPINE0, SPINE1, SPINE2, t);
-    const [nx, ny] = bezDown(SPINE0, SPINE1, SPINE2, t);
-    const hump = 12 * Math.pow(Math.sin((Math.PI * s) / N), 1.2) + extra;
-    upper.push([x - nx * (bodyRadius(t) * 0.82), y - ny * (bodyRadius(t) * 0.82)]);
-    lower.push([x - nx * (bodyRadius(t) * 0.82 + hump), y - ny * (bodyRadius(t) * 0.82 + hump)]);
+  // Four distant birds, drawn as shallow chevrons.
+  const birds: Array<[number, number, number]> = [
+    [185, 178, 16],
+    [248, 208, 12],
+    [305, 162, 14],
+    [845, 172, 13],
+  ];
+  for (const [bx, by, s] of birds) {
+    if (Math.abs(x - bx) > s + 4 || Math.abs(y - by) > s * 0.6 + 4) continue;
+    const d1 = sdSeg(x, y, bx - s, by - s * 0.35, bx, by + s * 0.25);
+    const d2 = sdSeg(x, y, bx, by + s * 0.25, bx + s, by - s * 0.35);
+    const d = Math.min(d1, d2);
+    c = over(c, BIRD, aa(d, 1.6) * 0.85);
   }
-  fillPoly([...upper, ...lower.reverse()], c);
-}
-dorsal(2.5, INK);
-dorsal(0, FIN_PALE);
-
-// 10. The head: bigger, drawn over the body's end so head and body are
-// one shape, with a wide-open shouting mouth.
-const headAt: Pt = [202, 76];
-const headAngle = -0.45;
-fillEllipse(headAt[0], headAt[1], 29, 20, headAngle, INK);
-fillEllipse(headAt[0], headAt[1], 26, 17, headAngle, KOI);
-fillEllipse(headAt[0] + 4, headAt[1] + 7, 14, 8, headAngle, CREAM);
-// Eye, wide open.
-fillDisc(210, 68, 6.5, PAPER);
-fillDisc(211, 68, 3, INK);
-fillDisc(212, 66, 1.4, PAPER);
-// Mouth, wide open in a shout, with a tongue.
-fillPoly(
-  [
-    [218, 68],
-    [232, 60],
-    [228, 80],
-  ],
-  INK,
-);
-fillPoly(
-  [
-    [221, 70],
-    [227, 67],
-    [225, 75],
-  ],
-  KOI_DEEP,
-);
-// Gill line behind the cheek.
-stroke(198, 86, 192, 98, 2, KOI_DEEP);
-// Whiskers trailing back from the snout, kept short.
-stroke(218, 80, 232, 72, 1.5, INK);
-stroke(216, 84, 228, 84, 1.5, INK);
-// Pectoral fin under the head.
-fillPoly(
-  [
-    [190, 96],
-    [176, 114],
-    [196, 104],
-  ],
-  INK,
-);
-fillPoly(
-  [
-    [190, 96],
-    [179, 111],
-    [194, 102],
-  ],
-  FIN_PALE,
-);
-
-// 11. Water droplets flying off the fish and the cup.
-const dropCols = [PAPER, AQUA_PALE, AQUA];
-for (let i = 0; i < 28; i++) {
-  // Fan bursting upward from the cup.
-  const ang = (-165 + rand() * 150) * (Math.PI / 180);
-  const d = 8 + rand() * 54;
-  const x = 76 + Math.cos(ang) * d;
-  const y = 222 + Math.sin(ang) * d * 0.9;
-  if (x < 158 && y < 82) continue; // bubble stays clean
-  fillDisc(x, y, 1 + rand() * 2.5, dropCols[i % 3]);
-}
-for (let i = 0; i < 24; i++) {
-  // Droplets flung off the body, both sides.
-  const t = 0.15 + rand() * 0.8;
-  const [x, y] = bezPoint(SPINE0, SPINE1, SPINE2, t);
-  const [nx, ny] = bezDown(SPINE0, SPINE1, SPINE2, t);
-  const side = rand() < 0.55 ? 1 : -1;
-  const off = bodyRadius(t) + 5 + rand() * 26;
-  const dx = x + nx * off * side;
-  const dy = y + ny * off * side;
-  if (dx < 158 && dy < 82) continue;
-  fillDisc(dx, dy, 1 + rand() * 2.5, dropCols[(i + 1) % 3]);
-}
-// A few big drops near the cup for weight.
-for (const [x, y, r] of [
-  [44, 208, 4],
-  [116, 214, 4.5],
-  [126, 190, 3.5],
-  [36, 232, 3],
-] as Array<[number, number, number]>) {
-  fillDisc(x, y, r, AQUA_PALE);
-  fillDisc(x - 1, y - 1, r * 0.45, PAPER);
+  return c;
 }
 
-// 12. The speech bubble, shouting at the judge.
-const bubX = 8;
-const bubY = 8;
-const bubW = 140;
-const bubH = 64;
-fillRoundRect(bubX - 3, bubY - 3, bubW + 6, bubH + 6, 14, INK);
-fillRoundRect(bubX, bubY, bubW, bubH, 12, PAPER);
-fillPoly(
-  [
-    [126, bubY + bubH - 4],
-    [140, bubY + bubH - 4],
-    [184, 84],
-  ],
-  INK,
-);
-fillPoly(
-  [
-    [128, bubY + bubH - 6],
-    [138, bubY + bubH - 6],
-    [180, 86],
-  ],
-  PAPER,
-);
-drawText(bubX + bubW / 2, bubY + 8, 'WOW,', 3, INK);
-drawText(bubX + bubW / 2, bubY + 38, 'JUDGE!', 3, INK);
-
-// ------------------------------------------------------------- PNG encoding
-
-// Minimal PNG encoder: 8-bit RGB, filter 0, zlib level 9.
-const CRC_TABLE: number[] = [];
-for (let n = 0; n < 256; n++) {
-  let c = n;
-  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-  CRC_TABLE[n] = c >>> 0;
+// ---------- the wave ----------
+function crestY(x: number): number {
+  // A great wave wall: low at the left horizon, rising steeply to the
+  // curling crest at the right.
+  const t = sstep(80, 1024, x);
+  return 720 - 460 * Math.pow(t, 1.3) + 22 * Math.sin(x * 0.011 + 1.2);
 }
+// Curling lip: a rotated ellipse — the crest folding over on itself.
+const LIP_X = 740;
+const LIP_Y = 315;
+const LIP_RX = 215;
+const LIP_RY = 78;
+const LIP_ROT = -0.42;
+
+function inLip(x: number, y: number): boolean {
+  const dx = x - LIP_X;
+  const dy = y - LIP_Y;
+  const cos = Math.cos(-LIP_ROT);
+  const sin = Math.sin(-LIP_ROT);
+  const lx = dx * cos - dy * sin;
+  const ly = dx * sin + dy * cos;
+  return (lx * lx) / (LIP_RX * LIP_RX) + (ly * ly) / (LIP_RY * LIP_RY) < 1;
+}
+
+// Normalised local y inside the lip ellipse (-1 top, +1 bottom edge).
+function lipLocalY(x: number, y: number): number {
+  const dx = x - LIP_X;
+  const dy = y - LIP_Y;
+  const cos = Math.cos(-LIP_ROT);
+  const sin = Math.sin(-LIP_ROT);
+  return (dx * sin + dy * cos) / LIP_RY;
+}
+
+function waterColor(x: number, y: number): RGB {
+  const cy = crestY(x);
+  const depth = clamp((y - cy) / 420, 0, 1);
+  let c = mix3(WATER_SHALLOW, WATER_MID, sstep(0, 0.45, depth));
+  c = mix3(c, WATER_DEEP, sstep(0.45, 1, depth));
+  // Long streaks of lighter water running down the face.
+  const streak = fbm(x * 0.02 + 3.3, y * 0.015 + 1.2);
+  c = over(c, [120, 220, 205], (streak - 0.5) * 0.45);
+  // The curling lip shades darker toward its lower edge, foams at the tip,
+  // and catches light along its top leading edge.
+  if (inLip(x, y)) {
+    const ly = lipLocalY(x, y);
+    c = mix3(c, WATER_MID, sstep(-0.7, 0.9, ly) * 0.5);
+    c = over(c, FOAM, sstep(0.55, 0.9, ly) * 0.45);
+    c = over(c, [200, 245, 238], sstep(-0.9, -0.6, ly) * 0.4);
+  }
+  // Horizontal whitecaps streaking the deep water near the bottom.
+  if (y > 700) {
+    const fl = sstep(0.6, 0.78, fbm(x * 0.012 + 11.1, y * 0.004 + 5.5));
+    c = over(c, FOAM, fl * sstep(700, 900, y) * 0.3);
+  }
+  // Foam band hugging the crest surface only (not the lip above it).
+  const foamBand =
+    sstep(30, 2, y - cy) * sstep(-40, -2, y - cy) * (0.5 + 0.5 * fbm(x * 0.05 + 9.1, 3.7));
+  c = over(c, FOAM, foamBand * 0.85);
+  // A second, fainter foam line breaking a little below the crest.
+  const foam2 =
+    sstep(64, 50, y - cy) * sstep(96, 82, y - cy) * (0.35 + 0.65 * fbm(x * 0.04 + 6.2, 8.8));
+  c = over(c, FOAM, foam2 * 0.4);
+  return c;
+}
+
+// ---------- the teacup (drawn in rotated local space) ----------
+const CUP_X = 600;
+const CUP_Y = 470;
+const CUP_ROT = 0.42; // local frame rotated this far from world frame
+
+function cupColor(lx: number, ly: number): RGB | null {
+  // Returns the cup's colour at a local point, or null when outside the cup.
+  // Saucer first (drawn under the body).
+  const saucer = sdEllipse(lx, ly, 0, 66, 98, 15);
+  // Handle: torus centred right of the body, only its outer half shows.
+  const hd = Math.abs(Math.hypot(lx - 86, ly + 8) - 26) - 9;
+  // Cup body: rounded box with a rim ellipse and amber tea on top.
+  const body = sdRoundBox(lx, ly, 0, 0, 78, 52, 20);
+  const rim = sdEllipse(lx, ly, 0, -50, 80, 13);
+  const tea = sdEllipse(lx, ly, 0, -48, 70, 10);
+
+  // Porcelain shading: light from the upper right, darker toward the base.
+  let shade = 0.94 + 0.08 * clamp(lx / 78, -1, 1) - 0.16 * sstep(18, 52, ly);
+  let col: RGB = [PORCELAIN[0] * shade, PORCELAIN[1] * shade, PORCELAIN[2] * shade];
+  let hit = false;
+
+  // Saucer (soft blue-grey porcelain edge).
+  const sa = aa(saucer, 1.6);
+  if (sa > 0) {
+    col = over(col, [226, 232, 238], sa * 0.95);
+    hit = true;
+  }
+  // Handle.
+  const ha = aa(hd, 1.6) * (lx > 58 ? 1 : 0);
+  if (ha > 0) {
+    col = over(col, [PORCELAIN[0] * 0.96, PORCELAIN[1] * 0.96, PORCELAIN[2] * 0.96], ha);
+    hit = true;
+  }
+  // Body.
+  const ba = aa(body, 1.6);
+  if (ba > 0) {
+    col = over(col, [PORCELAIN[0] * shade, PORCELAIN[1] * shade, PORCELAIN[2] * shade], ba);
+    hit = true;
+    // Floral pattern: three small five-petal flowers on the body.
+    const flowers: Array<[number, number]> = [
+      [-38, 6],
+      [6, 20],
+      [44, 2],
+    ];
+    for (const [fx, fy] of flowers) {
+      for (let p = 0; p < 5; p++) {
+        const ang = (p / 5) * Math.PI * 2;
+        const px = fx + Math.cos(ang) * 8;
+        const py = fy + Math.sin(ang) * 8;
+        const pd = sdCirc(lx, ly, px, py, 4.6);
+        col = over(col, PETAL, aa(pd, 1.2) * ba * 0.95);
+      }
+      const cd = sdCirc(lx, ly, fx, fy, 3.2);
+      col = over(col, GOLD, aa(cd, 1.2) * ba * 0.95);
+    }
+    // Thin gold band under the rim.
+    const band = sstep(3, 0, Math.abs(ly + 34) - 1.5) * sstep(78, 70, Math.abs(lx));
+    col = over(col, GOLD, band * ba * 0.8);
+  }
+  // Rim lip.
+  const ra = aa(rim, 1.4);
+  if (ra > 0) {
+    col = over(col, [255, 255, 252], ra * 0.9);
+    hit = true;
+  }
+  // Tea surface inside the rim.
+  const ta = aa(tea, 1.4);
+  if (ta > 0) {
+    const teaShade = 1 - 0.25 * sstep(-70, 70, lx);
+    col = over(col, [TEA[0] * teaShade, TEA[1] * teaShade, TEA[2] * teaShade], ta);
+    // Bright tea highlight.
+    const hi = sdEllipse(lx, ly, -18, -50, 30, 4);
+    col = over(col, [255, 205, 120], aa(hi, 1.2) * ta * 0.7);
+    hit = true;
+  }
+  if (!hit) return null;
+  return col;
+}
+
+// Tea spilling from the rim in a loose arc (local space).
+// Returns [colour, alpha] or null when the point is outside the spill.
+function spillColor(lx: number, ly: number): [RGB, number] | null {
+  // A thin amber stream leaving the rim toward the lower left.
+  const stream = sdSeg(lx, ly, -72, -44, -150, 8);
+  let a = aa(stream - 4.5, 1.6) * 0.9;
+  // Droplets strung along a parabola past the stream's end.
+  for (let i = 0; i < 12; i++) {
+    const t = i / 11;
+    const dx = -150 - 90 * t;
+    const dy = 8 + 150 * t * t - 20 * t;
+    const r = 7 - 3.5 * t;
+    const d = sdCirc(lx, ly, dx, dy, r);
+    a = Math.max(a, aa(d, 1.4) * 0.95);
+  }
+  if (a <= 0) return null;
+  // Droplets further out catch the light; the stream stays deep amber.
+  const bright = sstep(0.4, 0.9, a);
+  return [
+    [lerp(TEA_DARK[0], 244, bright * 0.4), lerp(TEA_DARK[1], 178, bright * 0.4), lerp(TEA_DARK[2], 90, bright * 0.4)],
+    a,
+  ];
+}
+
+// Steam rising off the hot tea: two soft wavy columns (local space).
+function steamAlpha(lx: number, ly: number): number {
+  if (ly > -55 || ly < -170) return 0;
+  let a = 0;
+  for (const [base, phase] of [
+    [-20, 0],
+    [16, 2.1],
+  ] as Array<[number, number]>) {
+    const cx = base + 13 * Math.sin((ly + 60) * 0.035 + phase);
+    const d = Math.abs(lx - cx) - 5.5 * (1 - (ly + 60) / 110);
+    const fade = sstep(-55, -80, ly) * sstep(-170, -140, ly);
+    a = Math.max(a, aa(d, 3) * 0.32 * fade);
+  }
+  return a;
+}
+
+// ---------- scene assembly (one pixel) ----------
+function pixelColor(x: number, y: number): RGB {
+  let c = skyColor(x, y);
+
+  // Water is the wave face plus the curling lip.
+  const waterA = Math.max(y > crestY(x) ? 1 : 0, inLip(x, y) ? 1 : 0);
+  if (waterA > 0) {
+    c = over(c, waterColor(x, y), waterA);
+    // Soft shadow the curl throws onto the wave face below it.
+    const sh = sdEllipse(x, y, 700, 560, 260, 90);
+    c = over(c, [4, 28, 48], aa(sh, 60) * 0.22 * waterA);
+    // Hollow shadow tucked under the curling lip.
+    const tube = sdEllipse(x, y, 770, 395, 140, 40);
+    c = over(c, [4, 28, 48], aa(tube, 24) * 0.2 * waterA);
+  }
+
+  // The teacup, riding the wave face (world-space shadow first).
+  const cupShadow = sdEllipse(x, y, CUP_X, CUP_Y + 88, 135, 22);
+  if (waterA > 0) c = over(c, [4, 28, 48], aa(cupShadow, 18) * 0.22 * waterA);
+
+  const dx = x - CUP_X;
+  const dy = y - CUP_Y;
+  // Cheap bounding-box test before the rotated local evaluation.
+  if (Math.abs(dx) < 260 && Math.abs(dy) < 260) {
+    const cos = Math.cos(CUP_ROT);
+    const sin = Math.sin(CUP_ROT);
+    const lx = dx * cos + dy * sin;
+    const ly = -dx * sin + dy * cos;
+    const spill = spillColor(lx, ly);
+    if (spill) c = over(c, spill[0], spill[1]);
+    const cup = cupColor(lx, ly);
+    if (cup) c = over(c, cup, 1);
+    const steam = steamAlpha(lx, ly);
+    if (steam > 0) c = over(c, [255, 255, 255], steam);
+  }
+
+  // Gentle vignette to hold the eye on the wave and the cup.
+  const vx = (x - W / 2) / (W / 2);
+  const vy = (y - H / 2) / (H / 2);
+  const vig = sstep(0.62, 1.35, Math.hypot(vx, vy));
+  c = [c[0] * (1 - vig * 0.14), c[1] * (1 - vig * 0.14), c[2] * (1 - vig * 0.16)];
+  return c;
+}
+
+// ---------- spray and foam stamps (post-pass) ----------
+// Deterministic droplet field, generated once from the fixed seed.
+interface Drop {
+  x: number;
+  y: number;
+  r: number;
+  a: number;
+}
+function makeDrops(): Drop[] {
+  const drops: Drop[] = [];
+  // Spray bursting off the crest lip.
+  for (let i = 0; i < 90; i++) {
+    const x = 560 + rand() * 460;
+    const cy = crestY(x);
+    const y = cy - 70 + rand() * 120;
+    drops.push({ x, y, r: 2 + rand() * 4.5, a: 0.5 + rand() * 0.45 });
+  }
+  // Spray ringing the teacup.
+  for (let i = 0; i < 45; i++) {
+    const ang = rand() * Math.PI * 2;
+    const rad = 120 + rand() * 90;
+    drops.push({
+      x: CUP_X + Math.cos(ang) * rad,
+      y: CUP_Y + Math.sin(ang) * rad * 0.8,
+      r: 1.8 + rand() * 3.6,
+      a: 0.45 + rand() * 0.45,
+    });
+  }
+  // Foam flecks along the crest line.
+  for (let i = 0; i < 60; i++) {
+    const x = 60 + rand() * 940;
+    drops.push({ x, y: crestY(x) + 4 + rand() * 10, r: 2 + rand() * 3, a: 0.5 + rand() * 0.4 });
+  }
+  // A few foam flecks in the deep water at the bottom.
+  for (let i = 0; i < 28; i++) {
+    drops.push({ x: rand() * W, y: 930 + rand() * 85, r: 2 + rand() * 3, a: 0.15 + rand() * 0.25 });
+  }
+  return drops;
+}
+
+// ---------- PNG encoder (stdlib zlib; per-row filter choice) ----------
+const CRC_TABLE: Uint32Array = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+
 function crc32(buf: Buffer): number {
   let c = 0xffffffff;
   for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
+
 function pngChunk(type: string, data: Buffer): Buffer {
   const out = Buffer.alloc(12 + data.length);
   out.writeUInt32BE(data.length, 0);
@@ -598,38 +467,107 @@ function pngChunk(type: string, data: Buffer): Buffer {
   return out;
 }
 
-const OUT_W = W * SCALE;
-const OUT_H = H * SCALE;
-const raw = Buffer.alloc(OUT_H * (1 + OUT_W * 3));
-for (let y = 0; y < OUT_H; y++) {
-  const gy = Math.floor(y / SCALE);
-  raw[y * (1 + OUT_W * 3)] = 0; // filter: none
-  for (let x = 0; x < OUT_W; x++) {
-    const gx = Math.floor(x / SCALE);
-    const src = (gy * W + gx) * 3;
-    const dst = y * (1 + OUT_W * 3) + 1 + x * 3;
-    raw[dst] = pixels[src];
-    raw[dst + 1] = pixels[src + 1];
-    raw[dst + 2] = pixels[src + 2];
+// Filter one scanline with the given PNG filter type (0..4).
+function filterRow(row: Buffer, prev: Buffer | null, type: number): Buffer {
+  const out = Buffer.alloc(row.length + 1);
+  out[0] = type;
+  const bpp = 3;
+  for (let i = 0; i < row.length; i++) {
+    const left = i >= bpp ? row[i - bpp] : 0;
+    const up = prev ? prev[i] : 0;
+    const upLeft = prev && i >= bpp ? prev[i - bpp] : 0;
+    let pred = 0;
+    if (type === 1) pred = left;
+    else if (type === 2) pred = up;
+    else if (type === 3) pred = (left + up) >> 1;
+    else if (type === 4) {
+      const p = left + up - upLeft;
+      const pa = Math.abs(p - left);
+      const pb = Math.abs(p - up);
+      const pc = Math.abs(p - upLeft);
+      pred = pa <= pb && pa <= pc ? left : pb <= pc ? up : upLeft;
+    }
+    out[i + 1] = (row[i] - pred) & 0xff;
   }
+  return out;
 }
 
-const ihdr = Buffer.alloc(13);
-ihdr.writeUInt32BE(OUT_W, 0);
-ihdr.writeUInt32BE(OUT_H, 4);
-ihdr[8] = 8; // bit depth
-ihdr[9] = 2; // color type RGB
-ihdr[10] = 0;
-ihdr[11] = 0;
-ihdr[12] = 0;
+function encodePNG(rgb: Uint8Array, w: number, h: number): Buffer {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // colour type 2 (RGB)
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+  const parts: Buffer[] = [Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), pngChunk('IHDR', ihdr)];
+  const raw: Buffer[] = [];
+  let prev: Buffer | null = null;
+  const stride = w * 3;
+  for (let y = 0; y < h; y++) {
+    const row = Buffer.from(rgb.buffer, rgb.byteOffset + y * stride, stride);
+    // Pick the filter with the smallest sum of absolute signed bytes.
+    let best: Buffer | null = null;
+    let bestScore = Infinity;
+    for (let t = 0; t < 5; t++) {
+      const f = filterRow(row, prev, t);
+      let score = 0;
+      for (let i = 1; i < f.length; i++) {
+        const v = f[i];
+        score += v < 128 ? v : 256 - v;
+      }
+      if (score < bestScore) {
+        bestScore = score;
+        best = f;
+      }
+    }
+    raw.push(best as Buffer);
+    prev = row;
+  }
+  const idat = deflateSync(Buffer.concat(raw), { level: 9 });
+  parts.push(pngChunk('IDAT', idat));
+  parts.push(pngChunk('IEND', Buffer.alloc(0)));
+  return Buffer.concat(parts);
+}
 
-const png = Buffer.concat([
-  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-  pngChunk('IHDR', ihdr),
-  pngChunk('IDAT', deflateSync(raw, { level: 9 })),
-  pngChunk('IEND', Buffer.alloc(0)),
-]);
+// ---------- main: render, stamp, encode, write ----------
+function main(): void {
+  const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+  mkdirSync(outDir, { recursive: true });
+  const buf = new Float32Array(W * H * 3);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const c = pixelColor(x, y);
+      const i = (y * W + x) * 3;
+      buf[i] = c[0];
+      buf[i + 1] = c[1];
+      buf[i + 2] = c[2];
+    }
+  }
+  // Spray and foam stamps.
+  for (const d of makeDrops()) {
+    const r = Math.ceil(d.r + 1);
+    const x0 = Math.max(0, Math.floor(d.x - r));
+    const x1 = Math.min(W - 1, Math.ceil(d.x + r));
+    const y0 = Math.max(0, Math.floor(d.y - r));
+    const y1 = Math.min(H - 1, Math.ceil(d.y + r));
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const dist = Math.hypot(x - d.x, y - d.y);
+        const a = sstep(d.r + 1, d.r - 1, dist) * d.a;
+        if (a <= 0) continue;
+        const i = (y * W + x) * 3;
+        buf[i] = lerp(buf[i], 240, a);
+        buf[i + 1] = lerp(buf[i + 1], 252, a);
+        buf[i + 2] = lerp(buf[i + 2], 255, a);
+      }
+    }
+  }
+  const rgb = new Uint8Array(W * H * 3);
+  for (let i = 0; i < rgb.length; i++) rgb[i] = clamp(Math.round(buf[i]), 0, 255);
+  const png = encodePNG(rgb, W, H);
+  writeFileSync(join(outDir, 'entry.png'), png);
+}
 
-const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-mkdirSync(outDir, { recursive: true });
-writeFileSync(join(outDir, 'entry.png'), png);
+main();
